@@ -26,23 +26,23 @@ Backend:
 
 3. create a virtual environment
     (powershell)
-   - python -m venv .venv
-   - .venv\Scripts\Activate
+      - python -m venv .venv
+      - .venv\Scripts\Activate
 
    (macOS/Linux/WSL)
-   source .venv/bin/activate
+      - source .venv/bin/activate
 
 4. install dependencies
-  pip install -r requirements.txt
+    - pip install -r requirements.txt
 
 
 5. Set Up OpenAI API key
-  - create a .env file in backend/
-  - put 'OPENAI_API_KEY=[your-key-here]'
+    - create a .env file in backend/
+    - put 'OPENAI_API_KEY=[your-key-here]'
 
 6. Run the FastAPI server
-  - uvicorn main:app --reload
-  - backend will run at http://127.0.0.1:8000
+    - uvicorn main:app --reload
+    - backend will run at http://127.0.0.1:8000
 
 
 7. cd ../frontend
