@@ -1,12 +1,13 @@
-### StudAI
+# StudAI
 
 
-# What is StudAI?
+## What is StudAI?
 
 StudAI is a pdf-based summarizer that will break down topics for the user and offer them a step-by-step guide on how to study this topic effectively.
+This project was made for CS4680 for the AI-Agent Project
 
 
-# Requirements
+## Requirements
 
 Make sure the following are installed:  
 
