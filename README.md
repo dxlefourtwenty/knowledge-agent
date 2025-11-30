@@ -31,7 +31,7 @@ Backend:
       - .venv\Scripts\Activate
 
    (macOS/Linux/WSL)
-      - source .venv/bin/activate
+      - source venv/bin/activate
 
 4. install dependencies
     - pip install -r requirements.txt
