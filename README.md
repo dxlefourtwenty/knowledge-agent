@@ -31,6 +31,7 @@ Backend:
       - .venv\Scripts\Activate
 
    (macOS/Linux/WSL)
+      - python -m venv venv
       - source venv/bin/activate
 
 4. install dependencies
@@ -42,7 +43,7 @@ Backend:
     - put 'OPENAI_API_KEY=[your-key-here]'
 
 6. Run the FastAPI server
-    - uvicorn main:app --reload
+    - python -m uvicorn main:app --reload
     - backend will run at http://127.0.0.1:8000
 
 
