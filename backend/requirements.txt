@@ -6,4 +6,4 @@ python-multipart
 openai
 python-dotenv
 typing_extensions
-
+pymupdf
