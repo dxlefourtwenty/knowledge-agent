@@ -8,6 +8,12 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from fastapi.responses import FileResponse
+import uuid
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 client = OpenAI()
 uploaded_pdfs = set()
@@ -124,15 +130,21 @@ tools = [
     }
 ]
 
+# Ensure absolute path for generated PDFs
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+GENERATED_DIR = os.path.join(BASE_DIR, "generated")
+os.makedirs(GENERATED_DIR, exist_ok=True)
+
+
 @app.post("/ask")
 async def ask_question(body: AskBody):
-    user_prompt = body.prompt
+    user_prompt = body.prompt or ""
 
-    if not user_prompt or user_prompt.strip() == "":
+    if not user_prompt.strip():
         raise HTTPException(400, "Prompt cannot be empty.")
 
     #
-    # ==== FIRST CALL: force tool use ====
+    # ==== FIRST MODEL CALL (FORCE TOOL USE) ====
     #
     first = client.chat.completions.create(
         model="gpt-5-nano",
@@ -140,9 +152,8 @@ async def ask_question(body: AskBody):
             {
                 "role": "system",
                 "content": (
-                    "You are an AI agent. You MUST always call the tool "
-                    "`search_vectorstore` before answering. "
-                    "Do not answer directly."
+                    "You are an AI agent. You MUST call the tool `search_vectorstore` "
+                    "before answering. Do NOT answer directly."
                 )
             },
             {"role": "user", "content": user_prompt}
@@ -153,99 +164,177 @@ async def ask_question(body: AskBody):
     assistant_msg = first.choices[0].message
     tool_calls = assistant_msg.tool_calls
 
-    if tool_calls and len(tool_calls) > 0:
-        tool_call = tool_calls[0]
-        name = tool_call.function.name
-        raw_args = tool_call.function.arguments
+    #
+    # ==== ENSURE TOOL CALL ====
+    #
+    if not tool_calls:
+        return {"error": "No tool call occurred."}
 
-        try:
-            args = eval(raw_args) if isinstance(raw_args, str) else raw_args
-        except:
-            args = {}
+    tool_call = tool_calls[0]
+    raw_args = tool_call.function.arguments
 
-        query = args.get("query", user_prompt)
+    try:
+        args = eval(raw_args) if isinstance(raw_args, str) else raw_args
+    except:
+        args = {}
 
-        #
-        # ==== RETRIEVE MANY RESULTS (multi-PDF support) ====
-        #
-        query_embedding = embed_text(query)
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=30  # ensures mixing chunks from multiple PDFs
-        )
+    query = args.get("query", user_prompt)
 
-        #
-        # ==== GROUP RESULTS BY FILENAME ====
-        #
-        grouped = {}
+    #
+    # ==== SEMANTIC SEARCH ====
+    #
+    query_embedding = embed_text(query)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=30
+    )
 
-        documents = results["documents"]
-        metadatas = results.get("metadatas", [])
+    #
+    # ==== GROUP RESULTS BY PDF + PAGE ====
+    #
+    grouped = {}
 
-        for row_docs, row_meta in zip(documents, metadatas):
-            for doc, meta in zip(row_docs, row_meta):
-                
-                # Handle missing metadata safely
-                if isinstance(meta, dict):
-                    filename = meta.get("filename", "Unknown_File")
-                    page = meta.get("page", 0)
+    for row_docs, row_meta in zip(results["documents"], results["metadatas"]):
+        for doc, meta in zip(row_docs, row_meta):
+            if isinstance(meta, dict):
+                filename = meta.get("filename", "Unknown_File")
+                page = meta.get("page", 0)
+            else:
+                filename = "Unknown_File"
+                page = 0
+
+            if filename not in grouped:
+                grouped[filename] = {}
+
+            grouped[filename][page] = doc
+
+    #
+    # ==== BUILD CLEAN CONTEXT ====
+    #
+    formatted_context = ""
+    for filename, pages in grouped.items():
+        formatted_context += f"\n\n=== {filename} ===\n"
+        for page_num in sorted(pages.keys()):
+            formatted_context += f"\n[Page {page_num}]\n{pages[page_num]}\n"
+
+    #
+    # ==== FINAL MODEL CALL (WITH CONTEXT) ====
+    #
+    tool_msg = {"role": "tool", "content": formatted_context}
+    if hasattr(tool_call, "id"):
+        tool_msg["tool_call_id"] = tool_call.id
+
+    final = client.chat.completions.create(
+        model="gpt-5-nano",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Use ONLY the provided PDF context. "
+                    "Do NOT include headings. Begin immediately with the explanation."
+                )
+            },
+            {"role": "user", "content": user_prompt},
+            assistant_msg,
+            tool_msg
+        ]
+    )
+
+    answer_text = final.choices[0].message.content
+
+    #
+    # ==== GENERATE PDF WITH WRAPPED TEXT ====
+    #
+    pdf_id = uuid.uuid4().hex
+    pdf_path = os.path.join(GENERATED_DIR, f"answer_{pdf_id}.pdf")
+
+    c = canvas.Canvas(pdf_path, pagesize=letter)
+    width, height = letter
+    y = height - inch
+
+    # Margins
+    left_margin = 1 * inch
+    max_width = width - 2 * inch  # left + right margins
+
+    #
+    # Helper: Wrapped Text Renderer
+    #
+    def draw_wrapped(text, y):
+        c.setFont("Helvetica", 11)
+        for paragraph in text.split("\n"):
+            words = paragraph.split()
+            line = ""
+
+            for w in words:
+                test_line = (line + " " + w).strip()
+                if stringWidth(test_line, "Helvetica", 11) <= max_width:
+                    line = test_line
                 else:
-                    filename = "Unknown_File"
-                    page = 0
+                    c.drawString(left_margin, y, line)
+                    y -= 0.2 * inch
 
-                if filename not in grouped:
-                    grouped[filename] = {}
+                    if y < 1 * inch:
+                        c.showPage()
+                        c.setFont("Helvetica", 11)
+                        y = height - inch
 
-                grouped[filename][page] = doc
+                    line = w
 
+            if line:
+                c.drawString(left_margin, y, line)
+                y -= 0.2 * inch
 
-        #
-        # ==== BUILD CLEAN GROUPED CONTEXT ====
-        #
-        formatted_context = ""
+            y -= 0.1 * inch  # paragraph spacing
 
-        for filename, pages in grouped.items():
-            formatted_context += f"\n\n=== {filename} ===\n"
-            for page_num in sorted(pages.keys()):
-                formatted_context += f"\n[Page {page_num}]\n{pages[page_num]}\n"
+            if y < 1 * inch:
+                c.showPage()
+                c.setFont("Helvetica", 11)
+                y = height - inch
 
-        #
-        # ==== SEND TO MODEL ====
-        #
-        tool_msg = {
-            "role": "tool",
-            "content": formatted_context
-        }
-        if hasattr(tool_call, "id"):
-            tool_msg["tool_call_id"] = tool_call.id
+        return y
 
-        final = client.chat.completions.create(
-            model="gpt-5-nano",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Use ONLY the provided PDF context to answer. "
-                        "The context is grouped by file and page."
-                    )
-                },
-                {"role": "user", "content": user_prompt},
-                assistant_msg,
-                tool_msg
-            ]
-        )
+    #
+    # ==== PDF TITLE ====
+    #
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(left_margin, y, "StudAI Generated Answer")
+    y -= 0.5 * inch
 
-        return {
-            "answer": final.choices[0].message.content,
-            "context": formatted_context,   # GROUPED CONTEXT
-            "grouped": grouped             # Optional: structured form
-        }
+    #
+    # ==== USER QUESTION (WRAPPED) ====
+    #
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(left_margin, y, "Your Question:")
+    y -= 0.35 * inch
 
-    # fallback
-    return {
-        "answer": assistant_msg.content,
-        "context": None
-    }
+    y = draw_wrapped(user_prompt, y)
+
+    #
+    # Separator
+    #
+    c.setFont("Helvetica", 11)
+    c.drawString(left_margin, y, "-" * 70)
+    y -= 0.35 * inch
+
+    #
+    # ==== GENERATED ANSWER (WRAPPED) ====
+    #
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(left_margin, y, "Generated Explanation:")
+    y -= 0.35 * inch
+
+    y = draw_wrapped(answer_text, y)
+
+    c.save()
+
+    #
+    # ==== RETURN PDF ====
+    #
+    return FileResponse(
+        pdf_path,
+        filename="studai_answer.pdf",
+        media_type="application/pdf"
+    )
 
 
 @app.get("/pdfs")

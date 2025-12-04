@@ -16,6 +16,8 @@ function App() {
 
   const [pdfList, setPdfList] = useState([]);
 
+  const [lastDownloaded, setLastDownloaded] = useState(null);
+
   const upload = async () => {
     if (!file) return;
 
@@ -45,17 +47,42 @@ function App() {
     setLoadingAnswer(true);
 
     try {
-      const res = await axios.post("http://localhost:8000/ask", {
-        prompt: question
-      });
-  
-      setAnswer(res.data.answer);
-      setContext(res.data.grouped);
+      const res = await axios.post(
+        "http://localhost:8000/ask",
+        { prompt: question },
+        { responseType: "blob" }
+      );
+
+      // Extract filename from headers
+      const cd = res.headers["content-disposition"];
+      let filename = "studai_answer.pdf";
+      if (cd) {
+        const match = cd.match(/filename="?(.+)"?/);
+        if (match) filename = match[1];
+      }
+
+      // Convert blob → downloadable link
+      const pdfBlob = new Blob([res.data], { type: "application/pdf" });
+      const url = window.URL.createObjectURL(pdfBlob);
+
+      // Auto-download the file
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      // Save download info so user can re-download
+      setLastDownloaded({ url, filename });
+
+      // Clear UI-based text
+      setAnswer("");
+      setContext({});
 
     } catch (err) {
       console.error(err);
-      alert("Failed to add additional questions.")
-
+      alert("Failed to generate PDF.");
     } finally {
       setLoadingAnswer(false);
     }
@@ -80,6 +107,9 @@ function App() {
           </div>
           <div>
             Make sure to scroll down and see the 'sources used' section!
+          </div>
+          <div className="mt-3">
+            The agent will download the file automatically for you to browse and study.
           </div>
         </div>
       </div>
@@ -163,16 +193,30 @@ function App() {
         </div>
       </div>
 
-      <div className="text-white font-medium flex flex-col justify-center items-center">
-        <div className="text-xl">Answer Below:</div> 
-        {answer && (
-          <div className="prose prose-invert max-w-[60%]">
-            <pre className="bg-gray-900/40 whitespace-pre-wrap px-15 py-4 border border-slate-600 mt-2 leading-relaxed rounded-xl">
-              {answer}
-            </pre>
-          </div>
-        )}
+      {lastDownloaded && (
+        <div className="text-green-400 mt-3 text-center">
+          <div className="font-bold text-xl">✔ PDF Generated!</div>
 
+          <button
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = lastDownloaded.url;
+              a.download = lastDownloaded.filename;
+              a.click();
+            }}
+            className="mt-2 px-4 py-2 bg-blue-400 hover:outline-white hover:outline-2 hover:scale-105
+              transition-transform cursor-pointer text-gray-800 rounded-md font-bold border-slate-500 border-2"
+          >
+            Download Again
+          </button>
+
+          <div className="text-sm text-gray-400 mt-1">
+            ({lastDownloaded.filename})
+          </div>
+        </div>
+      )}
+
+      <div className="text-white font-medium flex flex-col justify-center items-center">
         {context && Object.keys(context).length > 0 && (
           <div className="text-white max-w-[70%] mt-5">
             <div className="text-2xl font-bold text-blue-300 mb-3">
