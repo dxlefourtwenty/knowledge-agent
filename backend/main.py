@@ -193,9 +193,11 @@ async def ask_question(body: AskBody):
     # ==== GROUP RESULTS BY PDF + PAGE ====
     #
     grouped = {}
+    retrieval_entries = []
 
     for row_docs, row_meta in zip(results["documents"], results["metadatas"]):
         for doc, meta in zip(row_docs, row_meta):
+
             if isinstance(meta, dict):
                 filename = meta.get("filename", "Unknown_File")
                 page = meta.get("page", 0)
@@ -203,9 +205,16 @@ async def ask_question(body: AskBody):
                 filename = "Unknown_File"
                 page = 0
 
+            # Save for PDF appendix
+            retrieval_entries.append({
+                "filename": filename,
+                "page": page,
+                "text": doc[:500]  # limit snippet length
+            })
+
+            # Group for context, same as before
             if filename not in grouped:
                 grouped[filename] = {}
-
             grouped[filename][page] = doc
 
     #
@@ -324,6 +333,61 @@ async def ask_question(body: AskBody):
     y -= 0.35 * inch
 
     y = draw_wrapped(answer_text, y)
+    
+    # ==== APPENDIX: SOURCES USED ====
+    c.showPage()  # start a fresh page
+    y = height - inch
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(1 * inch, y, "Appendix: Sources Used")
+    y -= 0.5 * inch
+
+    c.setFont("Helvetica", 11)
+
+    for entry in retrieval_entries:
+        # Filename + Page Number
+        header = f"{entry['filename']} — Page {entry['page']}"
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(1 * inch, y, header)
+        y -= 0.25 * inch
+
+        # Text Snippet (wrapped)
+        snippet = entry["text"].replace("\n", " ")
+
+        # Wrapped text logic
+        words = snippet.split()
+        line = ""
+        while words:
+            word = words.pop(0)
+            test_line = (line + " " + word).strip()
+
+            if stringWidth(test_line, "Helvetica", 11) <= max_width:
+                line = test_line
+            else:
+                c.setFont("Helvetica", 11)
+                c.drawString(1 * inch, y, line)
+                y -= 0.2 * inch
+
+                if y < 1 * inch:
+                    c.showPage()
+                    y = height - inch
+
+                line = word
+
+        # Final leftover text
+        if line:
+            c.setFont("Helvetica", 11)
+            c.drawString(1 * inch, y, line)
+            y -= 0.3 * inch
+
+        # Spacing between entries
+        y -= 0.2 * inch
+
+        # Page break if necessary
+        if y < 1 * inch:
+            c.showPage()
+            y = height - inch
+
 
     c.save()
 
